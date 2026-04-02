@@ -1,0 +1,24 @@
+{
+  "name": "msg91-sender",
+  "version": "1.0.0",
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "send": "node sender.js",
+    "webhook": "node webhook.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.5.0",
+    "csv-parser": "^3.0.0",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.2",
+    "fast-csv": "^4.3.6",
+    "pg": "^8.11.0",
+    "aws-sdk": "^2.1400.0",
+    "drizzle-orm": "^1.0.0"
+  }
+}
