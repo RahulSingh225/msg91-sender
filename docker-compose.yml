@@ -1,17 +1,17 @@
 version: '3.8'
 
 services:
-  backend:
+  webhook:
     build: .
-    container_name: play_backend
-    command: node server.js
+    container_name: play_webhook
+    command: node webhook.js
     ports:
       - "3000:3000"
     env_file:
       - .env
     environment:
       - PORT=3000
-      - CALLBACKS_CSV=/app/callbacks.csv
+      - CALLBACKS_CSV=/app/callbacks/callbacks.csv
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
@@ -19,17 +19,6 @@ services:
       retries: 3
     restart: unless-stopped
     volumes:
-      - ./callbacks:/app
-
-  sender:
-    build: .
-    container_name: play_sender
-    # watches /data for recipients.csv and processes it when present
-    command: sh -c "mkdir -p /data/processed && while true; do if [ -f /data/recipients.csv ]; then node sender.js /data/recipients.csv; mv /data/recipients.csv /data/processed/recipients-$(date +%s).csv; fi; sleep 10; done"
-    env_file:
-      - .env
-    volumes:
-      - ./data:/data
-    restart: always
+      - ./callbacks:/app/callbacks
 
 # Use .env file in project root for environment variables when running compose
