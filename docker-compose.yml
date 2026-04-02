@@ -7,17 +7,10 @@ services:
     command: node server.js
     ports:
       - "3000:3000"
+    env_file:
+      - .env
     environment:
       - PORT=3000
-      - DATABASE_URL=${DATABASE_URL}
-      - AUTHKEY=${AUTHKEY}
-      - TEMPLATE_ID=${TEMPLATE_ID}
-      - SHORT_URL=${SHORT_URL}
-      - REALTIME=${REALTIME}
-      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-      - AWS_REGION=${AWS_REGION}
-      - S3_BUCKET=${S3_BUCKET}
       - CALLBACKS_CSV=/app/callbacks.csv
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
@@ -33,12 +26,8 @@ services:
     container_name: play_sender
     # watches /data for recipients.csv and processes it when present
     command: sh -c "mkdir -p /data/processed && while true; do if [ -f /data/recipients.csv ]; then node sender.js /data/recipients.csv; mv /data/recipients.csv /data/processed/recipients-$(date +%s).csv; fi; sleep 10; done"
-    environment:
-      - AUTHKEY=${AUTHKEY}
-      - TEMPLATE_ID=${TEMPLATE_ID}
-      - DATABASE_URL=${DATABASE_URL}
-      - SHORT_URL=${SHORT_URL}
-      - REALTIME=${REALTIME}
+    env_file:
+      - .env
     volumes:
       - ./data:/data
     restart: always
