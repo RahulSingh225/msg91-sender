@@ -12,13 +12,13 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "aws-sdk": "^2.1400.0",
     "axios": "^1.5.0",
     "csv-parser": "^3.0.0",
     "dotenv": "^16.0.0",
+    "drizzle-orm": "^0.45.2",
     "express": "^4.18.2",
     "fast-csv": "^4.3.6",
-    "pg": "^8.11.0",
-    "aws-sdk": "^2.1400.0",
-    "drizzle-orm": "^1.0.0"
+    "pg": "^8.11.0"
   }
 }
