@@ -12,6 +12,8 @@ services:
     environment:
       - PORT=3000
       - CALLBACKS_CSV=/app/callbacks/callbacks.csv
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
       interval: 30s
