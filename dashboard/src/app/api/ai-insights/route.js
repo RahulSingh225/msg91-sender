@@ -52,7 +52,8 @@ Do not hallucinate data. Do not print out the raw numbers back as a list, strict
     `;
 
     // 4. Send to Ollama
-    const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+    let OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+    OLLAMA_URL = OLLAMA_URL.replace(/\/v1\/?$/, '').replace(/\/$/, '');
     const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder14b';
 
     const ollamaResponse = await fetch(`${OLLAMA_URL}/api/generate`, {
