@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const csv = require('csv-parser');
 const axios = require('axios');
-const { Pool } = require('pg');
+const { pool, ensureTables } = require('./db');
+const crypto = require('crypto');
 
 const AUTHKEY = process.env.AUTHKEY;
 const TEMPLATE_ID = process.env.TEMPLATE_ID;
@@ -17,37 +18,17 @@ if (!AUTHKEY || !TEMPLATE_ID) {
 }
 
 const argv = process.argv.slice(2);
-// first non-flag arg is input file
 const inputArg = argv.find(a => !a.startsWith('-'));
 const input = inputArg || 'pincodes.csv';
 let DRY_RUN = process.env.DRY_RUN === '1' || argv.includes('--dry');
 const TRIAL = argv.includes('--trial');
-// Trial overrides dry-run to actually call API so response can be logged
 if (TRIAL) DRY_RUN = false;
 const BATCH_SIZE = 50;
 
 const DATABASE_URL = process.env.DATABASE_URL;
-let pool = null;
-if (DATABASE_URL) {
-  pool = new Pool({ connectionString: DATABASE_URL });
-}
 
-async function ensureOutgoingTable() {
-  if (!pool) return;
-  const client = await pool.connect();
-  try {
-    await client.query(`CREATE TABLE IF NOT EXISTS sms_outgoing (
-      id bigserial PRIMARY KEY,
-      sent_at timestamptz DEFAULT now(),
-      recipient text,
-      request_payload jsonb,
-      response_status int,
-      response_body jsonb
-    )`);
-  } finally {
-    client.release();
-  }
-}
+// Generate a unique batch ID for this send run
+const BATCH_ID = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -55,28 +36,60 @@ function buildRecipientFromRow(row) {
   const mobiles = row.mobiles || row.mobile || row.phone || row.telNum || row.mobile_number || row.Mobile;
   if (!mobiles) return null;
   const recipient = { mobiles };
-  // Map var1/var2 to uppercase keys expected by the template (VAR1, VAR2)
   if (row.var1 !== undefined || row.VAR1 !== undefined) recipient.var1 = row.var1 || row.VAR1;
   if (row.var2 !== undefined || row.VAR2 !== undefined) recipient.var2 = row.var2 || row.VAR2;
-  // include any additional keys (excluding mobile fields)
   Object.keys(row).forEach(k => {
-    if (['mobiles','mobile','phone','telNum','mobile_number','Mobile','var1','var2'].includes(k)) return;
+    if (['mobiles','mobile','phone','telNum','mobile_number','Mobile','var1','var2','VAR1','VAR2'].includes(k)) return;
     recipient[k] = row[k];
   });
   return recipient;
 }
 
+/**
+ * Persist recipient details to sms_recipients table for audit trail
+ */
+async function persistRecipients(recipients) {
+  if (!pool || !recipients || recipients.length === 0) return;
+  const client = await pool.connect();
+  try {
+    for (const r of recipients) {
+      const mobile = String(r.mobiles).replace(/[^0-9]/g, '');
+      const var1 = r.var1 || r.VAR1 || null;
+      const var2 = r.var2 || r.VAR2 || null;
+      // Collect extra vars
+      const extras = {};
+      Object.keys(r).forEach(k => {
+        if (['mobiles', 'var1', 'var2', 'VAR1', 'VAR2'].includes(k)) return;
+        extras[k] = r[k];
+      });
+      const extraVars = Object.keys(extras).length > 0 ? JSON.stringify(extras) : null;
+
+      await client.query(
+        `INSERT INTO sms_recipients(batch_id, mobile, var1, var2, extra_vars, template_id)
+         VALUES($1, $2, $3, $4, $5, $6)`,
+        [BATCH_ID, mobile, var1, var2, extraVars, TEMPLATE_ID]
+      );
+    }
+  } catch (err) {
+    console.error('Failed to persist recipients:', err.message);
+  } finally {
+    client.release();
+  }
+}
+
 async function sendBatch(recipients) {
   if (!recipients || recipients.length === 0) return;
-  // normalize mobile numbers: ensure country code 91 prefix
+
   function normalizeMobile(m) {
     if (!m) return m;
     const s = String(m).replace(/[^0-9]/g, '');
-    
     return '91' + s;
   }
 
   const normalizedRecipients = recipients.map(r => ({ ...r, mobiles: normalizeMobile(r.mobiles) }));
+
+  // Persist recipient data for audit trail BEFORE sending
+  await persistRecipients(normalizedRecipients);
 
   const payload = {
     template_id: TEMPLATE_ID,
@@ -105,38 +118,17 @@ async function sendBatch(recipients) {
       timeout: 15000
     });
     console.log('Batch sent, status', res.status, 'response:', JSON.stringify(res.data));
-    if (pool) {
-      try {
-        const recipientList = JSON.stringify(recipients.map(r => r.mobiles));
-        await pool.query(
-          'INSERT INTO sms_outgoing(recipient, request_payload, response_status, response_body) VALUES($1,$2,$3,$4)',
-          [recipientList, payload, res.status, res.data]
-        );
-      } catch (dbErr) {
-        console.error('Failed to insert outgoing response to DB', dbErr.message);
-      }
-    }
   } catch (err) {
     const errBody = err && err.response ? err.response.data : { message: err.message };
     console.error('Batch send error', errBody);
-    if (pool) {
-      try {
-        const recipientList = JSON.stringify(recipients.map(r => r.mobiles));
-        await pool.query(
-          'INSERT INTO sms_outgoing(recipient, request_payload, response_status, response_body) VALUES($1,$2,$3,$4)',
-          [recipientList, payload, err.response ? err.response.status : null, errBody]
-        );
-      } catch (dbErr) {
-        console.error('Failed to insert outgoing error to DB', dbErr.message);
-      }
-    }
   }
 }
 
 async function run() {
-  await ensureOutgoingTable();
+  console.log(`Batch ID: ${BATCH_ID}`);
+  await ensureTables();
   const ext = path.extname(input).toLowerCase();
-  // helper to split into chunks
+
   function chunkArray(arr, size) {
     const out = [];
     for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -161,7 +153,6 @@ async function run() {
     }
   } else {
     const rows = [];
-    // If --trial was provided, send single hard-coded recipient and return
     if (TRIAL) {
       const trialRow = { mobile: '8918379567', var1: 'rahul', var2: '2000' };
       const recipient = buildRecipientFromRow(trialRow);
@@ -183,7 +174,6 @@ async function run() {
         const batches = chunkArray(recipients, BATCH_SIZE);
         for (const batch of batches) {
           await sendBatch(batch);
-          // small delay to avoid hitting provider rate limits
           await sleep(150);
         }
         console.log('All messages queued');

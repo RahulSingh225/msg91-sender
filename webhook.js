@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
-const { Pool } = require('pg');
+const { pool, ensureTables } = require('./db');
+const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -9,20 +10,17 @@ if (!DATABASE_URL) {
   console.warn('DATABASE_URL not set — webhook will still accept callbacks but DB inserts will fail');
 }
 
-const pool = new Pool({ connectionString: DATABASE_URL });
+function stableStringify(obj) {
+  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+  if (Array.isArray(obj)) return '[' + obj.map(stableStringify).join(',') + ']';
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
+}
 
-async function ensureTable() {
-  if (!DATABASE_URL) return;
-  const client = await pool.connect();
-  try {
-    await client.query(`CREATE TABLE IF NOT EXISTS sms_events (
-      id bigserial PRIMARY KEY,
-      received_at timestamptz DEFAULT now(),
-      payload jsonb
-    )`);
-  } finally {
-    client.release();
-  }
+function parseTs(val) {
+  if (!val) return null;
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 const app = express();
@@ -30,12 +28,36 @@ app.use(express.json());
 
 app.post('/webhook', async (req, res) => {
   const body = req.body;
-  // Insert into Postgres
   if (DATABASE_URL) {
     try {
-      await pool.query('INSERT INTO sms_events(payload) VALUES($1)', [body]);
+      const hash = crypto.createHash('sha256').update(stableStringify(body)).digest('hex');
+
+      await pool.query(
+        `INSERT INTO sms_callbacks(
+          event, failure_reason, tel_num, credit, status,
+          request_id, requested_at, delivery_time, sender_id,
+          campaign_name, campaign_pid, sms_length, raw_payload, payload_hash
+        ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+        ON CONFLICT (payload_hash) DO NOTHING`,
+        [
+          body.event || body.eventName || null,
+          body.failureReason || null,
+          body.telNum || null,
+          body.credit ? parseFloat(body.credit) : null,
+          body.status != null ? String(body.status) : null,
+          body.requestId || null,
+          parseTs(body.requestedAt),
+          parseTs(body.deliveryTime),
+          body.senderId || null,
+          body.campaignName || null,
+          body.campaign_pid || null,
+          body.smsLength ? parseInt(body.smsLength) : null,
+          body,
+          hash
+        ]
+      );
     } catch (err) {
-      console.error('DB insert failed', err.message);
+      console.error('Webhook insert failed:', err.message);
     }
   }
 
@@ -45,6 +67,6 @@ app.post('/webhook', async (req, res) => {
 app.get('/health', (req, res) => res.send({ ok: true }));
 
 (async () => {
-  await ensureTable();
+  await ensureTables();
   app.listen(PORT, () => console.log('Webhook listening on', PORT));
 })();

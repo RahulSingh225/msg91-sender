@@ -1,49 +1,31 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
-const fs = require('fs');
 const path = require('path');
-const { db, sms_outgoing, sms_events, ensureTables } = require('./db');
-const csvWriter = require('fast-csv');
-const AWS = require('aws-sdk');
+const { pool, db, sms_recipients, sms_callbacks, ensureTables } = require('./db');
+const crypto = require('crypto');
 
 const PORT = process.env.PORT || 3000;
 const AUTHKEY = process.env.AUTHKEY;
 const TEMPLATE_ID = process.env.TEMPLATE_ID;
 const SHORT_URL = process.env.SHORT_URL || '0';
 const REALTIME = process.env.REALTIME || '1';
-const CALLBACKS_CSV = process.env.CALLBACKS_CSV || 'callbacks.csv';
 
 if (!AUTHKEY || !TEMPLATE_ID) {
   console.warn('AUTHKEY or TEMPLATE_ID not set — sending will fail until configured');
 }
 
-// Optional S3
-let s3 = null;
-if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY && process.env.AWS_REGION) {
-  AWS.config.update({
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-    region: process.env.AWS_REGION
-  });
-  s3 = new AWS.S3();
+function stableStringify(obj) {
+  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+  if (Array.isArray(obj)) return '[' + obj.map(stableStringify).join(',') + ']';
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
 }
 
-function appendCsv(obj) {
-  const fileExists = fs.existsSync(CALLBACKS_CSV);
-  const ws = fs.createWriteStream(CALLBACKS_CSV, { flags: 'a' });
-  const headers = Object.keys(obj);
-  const csvStream = csvWriter.format({ headers: !fileExists ? headers : false });
-  csvStream.pipe(ws);
-  csvStream.write(obj);
-  csvStream.end();
-}
-
-async function uploadCsvToS3() {
-  if (!s3 || !process.env.S3_BUCKET) return;
-  const body = fs.readFileSync(CALLBACKS_CSV);
-  const key = path.basename(CALLBACKS_CSV);
-  await s3.putObject({ Bucket: process.env.S3_BUCKET, Key: key, Body: body }).promise();
+function parseTs(val) {
+  if (!val) return null;
+  const d = new Date(val);
+  return isNaN(d.getTime()) ? null : d;
 }
 
 async function sendFlow(recipients) {
@@ -73,32 +55,28 @@ app.post('/send', async (req, res) => {
     return res.status(400).send({ error: 'Provide recipients array in JSON body' });
   }
 
+  const BATCH_ID = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+
+  // Insert into new sms_recipients
+  try {
+    const records = recipients.map(r => ({
+      batch_id: BATCH_ID,
+      mobile: String(r.mobiles || r.mobile || r.phone || r.telNum).replace(/[^0-9]/g, ''),
+      var1: r.var1 || r.VAR1 || null,
+      var2: r.var2 || r.VAR2 || null,
+      template_id: TEMPLATE_ID,
+      extra_vars: r
+    }));
+    await db.insert(sms_recipients).values(records);
+  } catch (err) {
+    console.error('Failed to insert into sms_recipients', err.message);
+  }
+
   try {
     const result = await sendFlow(recipients);
-    // store outgoing summary
-    try {
-      await db.insert(sms_outgoing).values({
-        recipient: JSON.stringify(recipients.map(r => r.mobiles || r.mobile || r.phone || r.telNum)),
-        request_payload: { recipients },
-        response_status: result.status,
-        response_body: result.data
-      });
-    } catch (dbErr) {
-      console.error('DB insert failed', dbErr.message);
-    }
     res.status(200).send({ ok: true, result });
   } catch (err) {
     const errBody = err && err.response ? err.response.data : { message: err.message };
-    try {
-      await db.insert(sms_outgoing).values({
-        recipient: JSON.stringify(recipients.map(r => r.mobiles || r.mobile || r.phone || r.telNum)),
-        request_payload: { recipients },
-        response_status: err.response ? err.response.status : null,
-        response_body: errBody
-      });
-    } catch (dbErr) {
-      console.error('DB insert failed', dbErr.message);
-    }
     res.status(500).send({ error: errBody });
   }
 });
@@ -107,17 +85,40 @@ app.post('/webhook', async (req, res) => {
   const body = req.body;
   try {
     if (process.env.DATABASE_URL) {
-      await db.insert(sms_events).values({ payload: body });
+      const hash = crypto.createHash('sha256').update(stableStringify(body)).digest('hex');
+
+      // Exclusively insert into flattened sms_callbacks 
+      try {
+        await pool.query(
+          `INSERT INTO sms_callbacks(
+            event, failure_reason, tel_num, credit, status,
+            request_id, requested_at, delivery_time, sender_id,
+            campaign_name, campaign_pid, sms_length, raw_payload, payload_hash
+          ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+          ON CONFLICT (payload_hash) DO NOTHING`,
+          [
+            body.event || body.eventName || null,
+            body.failureReason || null,
+            body.telNum || null,
+            body.credit ? parseFloat(body.credit) : null,
+            body.status != null ? String(body.status) : null,
+            body.requestId || null,
+            parseTs(body.requestedAt),
+            parseTs(body.deliveryTime),
+            body.senderId || null,
+            body.campaignName || null,
+            body.campaign_pid || null,
+            body.smsLength ? parseInt(body.smsLength) : null,
+            body,
+            hash
+          ]
+        );
+      } catch (cbErr) {
+        console.error('sms_callbacks insert failed', cbErr.message);
+      }
     }
   } catch (err) {
-    console.error('DB insert failed', err.message);
-  }
-
-  try {
-    appendCsv(body);
-    if (s3 && process.env.S3_BUCKET) await uploadCsvToS3();
-  } catch (err) {
-    console.error('CSV/S3 write failed', err.message);
+    console.error('Webhook error', err.message);
   }
 
   res.status(200).send({ ok: true });
