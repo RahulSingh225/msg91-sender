@@ -30,9 +30,7 @@ services:
     env_file:
       - .env
     environment:
-      - PORT=3000
-      - OLLAMA_URL=${OLLAMA_URL:-http://127.0.0.1:11434}
-      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder14b}
+      - PORT=3001
     restart: unless-stopped
     depends_on:
       - webhook
