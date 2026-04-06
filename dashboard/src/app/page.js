@@ -11,6 +11,8 @@ export default function DashboardOverview() {
   const [summary, setSummary] = useState(null);
   const [failures, setFailures] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [aiInsight, setAiInsight] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
 
   useEffect(() => {
     async function fetchData() {
@@ -37,9 +39,52 @@ export default function DashboardOverview() {
   if (loading) return <div className="page-title">Loading dashboard...</div>;
   if (!summary) return <div className="page-title">Failed to load data</div>;
 
+  const generateInsight = async () => {
+    setAiLoading(true);
+    setAiInsight('');
+    try {
+      const res = await fetch('/api/ai-insights', { method: 'POST' });
+      const data = await res.json();
+      if (data.error) {
+        setAiInsight('Error: ' + data.error);
+      } else {
+        setAiInsight(data.insight);
+      }
+    } catch (err) {
+      setAiInsight('Error: Failed to reach AI endpoint.');
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   return (
     <div>
-      <h1 className="page-title">Platform Overview</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+        <h1 className="page-title" style={{ marginBottom: 0 }}>Platform Overview</h1>
+        <button 
+          onClick={generateInsight} 
+          disabled={aiLoading}
+          className="btn btn-primary"
+          style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+        >
+          {aiLoading ? 'Generating Analysis...' : '✨ Generate AI Insights'}
+        </button>
+      </div>
+
+      {(aiInsight || aiLoading) && (
+        <div className="glass-panel" style={{ marginBottom: '40px', borderColor: 'var(--accent-primary)', background: 'rgba(99, 102, 241, 0.05)' }}>
+          <h2 className="section-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-primary)' }}>
+            ✨ Ollama Qwen2.5 Analysis
+          </h2>
+          {aiLoading ? (
+            <p style={{ color: 'var(--text-secondary)' }}>Processing metrics through LLM...</p>
+          ) : (
+            <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', fontSize: '15px' }}>
+              {aiInsight}
+            </div>
+          )}
+        </div>
+      )}
       
       <div className="kpi-grid">
         <div className="glass-panel kpi-card">
