@@ -6,3 +6,6 @@ npm-debug.log
 callbacks
 data/processed
 *.log
+dashboard/node_modules
+dashboard/.next
+*.csv
