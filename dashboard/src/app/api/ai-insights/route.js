@@ -56,14 +56,27 @@ Do not hallucinate data. Do not print out the raw numbers back as a list, strict
     OLLAMA_URL = OLLAMA_URL.replace(/\/v1\/?$/, '').replace(/\/$/, '');
     const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder14b';
 
+    const requestBody = {
+      model: OLLAMA_MODEL,
+      prompt: promptContext,
+      stream: false
+    };
+
+    // Build and log a curl example and request details for debugging
+    try {
+      const jsonBody = JSON.stringify(requestBody).replace(/'/g, "\\'");
+      const curlCmd = `curl -s -X POST '${OLLAMA_URL}/api/generate' -H 'Content-Type: application/json' -d '${jsonBody}'`;
+      console.log('Ollama request URL:', `${OLLAMA_URL}/api/generate`);
+      console.log('Ollama request body (object):', requestBody);
+      console.log('Ollama curl example:', curlCmd);
+    } catch (logErr) {
+      console.log('Failed to build curl example for Ollama request:', logErr);
+    }
+
     const ollamaResponse = await fetch(`${OLLAMA_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        prompt: promptContext,
-        stream: false
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!ollamaResponse.ok) {
@@ -71,6 +84,14 @@ Do not hallucinate data. Do not print out the raw numbers back as a list, strict
     }
 
     const aiData = await ollamaResponse.json();
+
+    // Log the raw response for troubleshooting
+    try {
+      console.log('Ollama raw response:', aiData);
+      console.log('Ollama insight (preview):', aiData.response ? String(aiData.response).slice(0, 1000) : aiData.response);
+    } catch (logErr) {
+      console.log('Failed to log Ollama response:', logErr);
+    }
 
     return NextResponse.json({ insight: aiData.response });
 
